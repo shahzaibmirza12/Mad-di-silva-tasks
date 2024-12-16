@@ -15,7 +15,8 @@ class AsdaGroceriesSpider(Spider):
     name = "asda"
     allowed_domains = ["groceries.asda.com"]
     start_urls = ["https://groceries.asda.com/special-offers/all-offers"]
-    api_url = 'https://groceries.asda.com/api/bff/graphql'
+    qraphsql_api_url = 'https://groceries.asda.com/api/bff/graphql'
+    api_url = "https://phplaravel-1369810-5049628.cloudwaysapps.com/api/push-data"
 
     current_dt = datetime.now().strftime("%d%m%Y%H%M")
 
@@ -23,14 +24,11 @@ class AsdaGroceriesSpider(Spider):
         'RETRY_TIMES': 5,
         'RETRY_HTTP_CODES': [500, 502, 503, 504, 400, 403, 404, 408],
         'FEED_EXPORTERS': {
-            # 'xlsx': 'scrapy_xlsx.XlsxItemExporter',
             'json': 'scrapy.exporters.JsonItemExporter',
         },
 
         'FEEDS': {
-            # f'output/Asda Groceries Scraper {current_dt}.xlsx': {
             f'output/Asda Groceries Scraper {current_dt}.json': {
-                # 'format': 'xlsx',
                 'format': 'json',
                 'encoding': 'utf8',
                 'fields': ['retailer_id', 'retailer_name', 'retailer_country', 'retailer_category',
@@ -67,6 +65,7 @@ class AsdaGroceriesSpider(Spider):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.items_scrapped = 0
         # Logs
         logs_dir = '/app/logs'
         os.makedirs(logs_dir, exist_ok=True)
@@ -89,7 +88,7 @@ class AsdaGroceriesSpider(Spider):
 
         for cat in categories:
             data = self.get_data(category=cat, page_id=False)
-            yield Request(self.api_url, headers=self.headers, method='POST', body=json.dumps(data), dont_filter=True,
+            yield Request(self.qraphsql_api_url, headers=self.headers, method='POST', body=json.dumps(data), dont_filter=True,
                           callback=self.pagination, meta={'handle_httpstatus_all': True, 'category':cat})
 
     def pagination(self, response, **kwargs):
@@ -118,7 +117,7 @@ class AsdaGroceriesSpider(Spider):
                     data = self.get_data(category=category, page_id=item_id)
                     print('Product Called:', item.get('item', {}).get('name', ''))
 
-                    yield Request(self.api_url, headers=self.headers, method='POST', body=json.dumps(data),
+                    yield Request(self.qraphsql_api_url, headers=self.headers, method='POST', body=json.dumps(data),
                                   callback=self.parse_detail, dont_filter=True, meta={'handle_httpstatus_all': True})
             else:
                 # Handle the case where listing_items is None (optional)
@@ -163,6 +162,13 @@ class AsdaGroceriesSpider(Spider):
             retailer_category = info.get('taxonomy_info', {}).get('category_name', '')
 
             promo_description, promotion_discount, price_save, loyalty_disc, exclusive = self.get_promotion_discount(listing_items)
+            # Use regex to extract digits and decimals
+            integer_discount = 0
+            match = re.search(r'\d+(\.\d+)?', promotion_discount)
+            if match:
+                integer_discount = int(float(match.group()))
+            else:
+                integer_discount = 0
 
             item = OrderedDict()
             item['retailer_id'] = 'Asda'
@@ -171,32 +177,35 @@ class AsdaGroceriesSpider(Spider):
             item['retailer_category'] = retailer_category
             item['retailer_category_id'] = info.get('taxonomy_info', {}).get('category_name', '')
             item['standard_category'] = self.category_mapping(retailer_category)
-            item['retailer_website'] = 'None'
+            item['retailer_website'] = ''
             item['category_id'] = info.get('taxonomy_info', {}).get('category_id', '')
             item['product_id'] = info.get('cin', '')
             item['product_title'] = info.get('name', '')
             item['product_description'] = self.get_prod_description(listing_items)
             item['promotion_type'] = self.get_promo_type(listing_items)
             item['promotion_price'] = promotion_price
-            item['promotion_discount'] = promotion_discount
+            # item['promotion_discount'] = promotion_discount
+            item['promotion_discount'] = integer_discount
             item['promotion_description'] = promo_description
-            item['PRICE_SAVING'] = price_save if price_save else None
-            item['LOYALTY_DISCOUNT'] = loyalty_disc if loyalty_disc else None
-            item['EXCLUSIVE'] = exclusive if exclusive else None
-            item['promotion_start_date'] = 'None'
-            item['promotion_expiry'] = 'None'
-            item['promotion_badge_type'] = 'None'
-            item['rich_content_displayed'] = 'False'
-            item['brand_logo_url'] = 'None'
-            item['retailer_logo_url'] = 'None'
+            item['PRICE_SAVING'] = price_save if price_save else ''
+            item['LOYALTY_DISCOUNT'] = loyalty_disc if loyalty_disc else ''
+            item['EXCLUSIVE'] = exclusive if exclusive else ''
+            item['promotion_start_date'] = ''
+            item['promotion_expiry'] = ''
+            item['promotion_badge_type'] = ''
+            item['rich_content_displayed'] = False
+            item['brand_logo_url'] = ''
+            item['retailer_logo_url'] = ''
             item['rich_content_images'] = self.get_images(listing_items)
+
             iso_timestamp = datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
             # Convert ISO 8601 format to MySQL-compatible format
             item['timestamp'] = datetime.strptime(iso_timestamp, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S")
             item['url'] = f"https://groceries.asda.com/product/{listing_items.get('item_id', '')}"
 
             if item['product_title']:
-                yield item
+                # yield item
+                self.post_to_api(item)
             else:
                 pass
         except Exception as e:
@@ -424,7 +433,6 @@ class AsdaGroceriesSpider(Spider):
         return description
 
     def get_images(self, listing_items):
-        # url = 'https://ui.assets-asda.com/dm/asdagroceries/5060360506128_T1?wid=1000&hei=1000'
         urls = []
         img_id = listing_items.get('item', {}).get('images', {}).get('scene7_id', '')
         img_host = listing_items.get('item', {}).get('images', {}).get('scene7_host', '')
@@ -551,3 +559,24 @@ class AsdaGroceriesSpider(Spider):
         with open(self.logs_filepath, mode='a', encoding='utf-8') as logs_file:
             logs_file.write(f'{log_msg}\n')
             print(log_msg)
+
+    def post_to_api(self, item):
+        """
+        Sends a POST request to the API with the item data.
+        """
+        try:
+            # Convert item to JSON
+            response = requests.post(self.api_url, json=item, headers={'Content-Type': 'application/json'})
+
+            if response.status_code == 200:
+                self.items_scrapped += 1
+                print('Items ae Scrapped: ', self.items_scrapped)
+                self.write_logs(f'[POST_TO_API] Successfully uploaded data for product ID {item.get("product_id")}. Response: {response.json()}')
+            else:
+                self.write_logs(f'[POST_TO_API] Failed to upload data for product ID {item.get("product_id", "")}. '
+                                f'Status Code: {response.status_code}, Response: {response.text}')
+
+        except requests.exceptions.RequestException as e:
+            self.write_logs(f'[POST_TO_API] Request error while uploading data for product ID {item.get("product_id", "")}: {e}')
+        except Exception as e:
+            self.write_logs(f'[POST_TO_API] Unexpected error: {e}')
